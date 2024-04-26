@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
+// @audit-issue overflow/underflow possible because using a version < 0.8.0
 pragma solidity ^0.7.6;
 
 import {ERC721} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {Base64} from "lib/base64/base64.sol";
+import {Test, console} from "forge-std/Test.sol";
 
 /// @title PuppyRaffle
 /// @author PuppyLoveDAO
@@ -77,12 +79,15 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @notice duplicate entrants are not allowed
     /// @param newPlayers the list of players to enter the raffle
     function enterRaffle(address[] memory newPlayers) public payable {
+        console.log("entering enterRaffle...");
         require(msg.value == entranceFee * newPlayers.length, "PuppyRaffle: Must send enough to enter raffle");
+        // @audit-info should check if address is SC else will get stuck ltr on, check using Address.isContract()
         for (uint256 i = 0; i < newPlayers.length; i++) {
             players.push(newPlayers[i]);
         }
 
         // Check for duplicates
+        // @audit-issue duplicate check works, but very gas inefficient and open to DDoS (spam many addresses)
         for (uint256 i = 0; i < players.length - 1; i++) {
             for (uint256 j = i + 1; j < players.length; j++) {
                 require(players[i] != players[j], "PuppyRaffle: Duplicate player");
@@ -93,20 +98,26 @@ contract PuppyRaffle is ERC721, Ownable {
 
     /// @param playerIndex the index of the player to refund. You can find it externally by calling `getActivePlayerIndex`
     /// @dev This function will allow there to be blank spots in the array
+    // @audit-issue open to re-entrancy attack because doesn't follow check-effects-interaction
     function refund(uint256 playerIndex) public {
+        console.log("entering refund...");
+        // console.log("player length before refunding:", players.length);
         address playerAddress = players[playerIndex];
         require(playerAddress == msg.sender, "PuppyRaffle: Only the player can refund");
         require(playerAddress != address(0), "PuppyRaffle: Player already refunded, or is not active");
 
+        console.log("current balance of puppyRaffle:", address(this).balance);
         payable(msg.sender).sendValue(entranceFee);
 
         players[playerIndex] = address(0);
         emit RaffleRefunded(playerAddress);
+        // console.log("player length after refunding:", players.length);
     }
 
     /// @notice a way to get the index in the array
     /// @param player the address of a player in the raffle
     /// @return the index of the player in the array, if they are not active, it returns 0
+    // @audit-ok this function looks ok
     function getActivePlayerIndex(address player) external view returns (uint256) {
         for (uint256 i = 0; i < players.length; i++) {
             if (players[i] == player) {
@@ -122,20 +133,31 @@ contract PuppyRaffle is ERC721, Ownable {
     /// @dev we use a hash of on-chain data to generate the random numbers
     /// @dev we reset the active players array after the winner is selected
     /// @dev we send 80% of the funds to the winner, the other 20% goes to the feeAddress
+    // @audit-issue potential to be frontran
     function selectWinner() external {
+        // console.log("entering selectWinner...");
+        // console.log("players:");
+        // logArray(players);
         require(block.timestamp >= raffleStartTime + raffleDuration, "PuppyRaffle: Raffle not over");
+        // @audit-issue player length not accurate if ppl refund halfway
         require(players.length >= 4, "PuppyRaffle: Need at least 4 players");
+        // @audit-issue random function can be predicted since block.timestamp and block.difficulty can be found out
+        // @audit-issue if theres players that refunded, theres a chance that it'll prize will be sent to address(0)
         uint256 winnerIndex =
             uint256(keccak256(abi.encodePacked(msg.sender, block.timestamp, block.difficulty))) % players.length;
+
         address winner = players[winnerIndex];
+        // @audit-issue if player length is wrong, the value of totalAmountCollected will be wrong as well
         uint256 totalAmountCollected = players.length * entranceFee;
         uint256 prizePool = (totalAmountCollected * 80) / 100;
         uint256 fee = (totalAmountCollected * 20) / 100;
+        // @audit-issue typecasting uint256 to uint64
         totalFees = totalFees + uint64(fee);
 
         uint256 tokenId = totalSupply();
 
         // We use a different RNG calculate from the winnerIndex to determine rarity
+        // @audit-issue shouldn't use block.difficulty as RNG
         uint256 rarity = uint256(keccak256(abi.encodePacked(msg.sender, block.difficulty))) % 100;
         if (rarity <= COMMON_RARITY) {
             tokenIdToRarity[tokenId] = COMMON_RARITY;
@@ -144,10 +166,15 @@ contract PuppyRaffle is ERC721, Ownable {
         } else {
             tokenIdToRarity[tokenId] = LEGENDARY_RARITY;
         }
-
+        // console.log("before deleting players:");
+        // logArray(players);
         delete players;
+
+        // console.log("after deleting players:");
+        // logArray(players);
         raffleStartTime = block.timestamp;
         previousWinner = winner;
+
         (bool success,) = winner.call{value: prizePool}("");
         require(success, "PuppyRaffle: Failed to send prize pool to winner");
         _safeMint(winner, tokenId);
@@ -155,6 +182,7 @@ contract PuppyRaffle is ERC721, Ownable {
 
     /// @notice this function will withdraw the fees to the feeAddress
     function withdrawFees() external {
+        // @audit-issue if anyone transfer any small amount of ETH to the SC, then the require will fail and this function cant be called
         require(address(this).balance == uint256(totalFees), "PuppyRaffle: There are currently players active!");
         uint256 feesToWithdraw = totalFees;
         totalFees = 0;
@@ -164,12 +192,14 @@ contract PuppyRaffle is ERC721, Ownable {
 
     /// @notice only the owner of the contract can change the feeAddress
     /// @param newFeeAddress the new address to send fees to
+    // @audit-issue need to check if recipient can accept ETH
     function changeFeeAddress(address newFeeAddress) external onlyOwner {
         feeAddress = newFeeAddress;
         emit FeeAddressChanged(newFeeAddress);
     }
 
     /// @notice this function will return true if the msg.sender is an active player
+    // @audit-info this function isnt used
     function _isActivePlayer() internal view returns (bool) {
         for (uint256 i = 0; i < players.length; i++) {
             if (players[i] == msg.sender) {
@@ -212,5 +242,13 @@ contract PuppyRaffle is ERC721, Ownable {
                 )
             )
         );
+    }
+
+    /// @notice helper function to print arrays
+    function logArray(address[] memory arr) public {
+        console.log("Logging array:");
+        for (uint i = 0; i < arr.length; i++) {
+            console.log(arr[i]);
+        }
     }
 }

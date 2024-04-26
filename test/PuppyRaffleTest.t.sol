@@ -4,9 +4,12 @@ pragma experimental ABIEncoderV2;
 
 import {Test, console} from "forge-std/Test.sol";
 import {PuppyRaffle} from "../src/PuppyRaffle.sol";
+import {AttackContract} from "../src/Attack.sol";
 
 contract PuppyRaffleTest is Test {
     PuppyRaffle puppyRaffle;
+    AttackContract attackContract;
+
     uint256 entranceFee = 1e18;
     address playerOne = address(1);
     address playerTwo = address(2);
@@ -21,6 +24,8 @@ contract PuppyRaffleTest is Test {
             feeAddress,
             duration
         );
+
+        attackContract = new AttackContract(puppyRaffle);
     }
 
     //////////////////////
@@ -48,6 +53,19 @@ contract PuppyRaffleTest is Test {
         puppyRaffle.enterRaffle{value: entranceFee * 2}(players);
         assertEq(puppyRaffle.players(0), playerOne);
         assertEq(puppyRaffle.players(1), playerTwo);
+    }
+
+    function testCanEnterRaffleFour() public {
+        address[] memory players = new address[](4);
+        players[0] = playerOne;
+        players[1] = playerTwo;
+        players[2] = playerThree;
+        players[3] = playerFour;
+        puppyRaffle.enterRaffle{value: entranceFee * 4}(players);
+        assertEq(puppyRaffle.players(0), playerOne);
+        assertEq(puppyRaffle.players(1), playerTwo);
+        assertEq(puppyRaffle.players(2), playerThree);
+        assertEq(puppyRaffle.players(3), playerFour);
     }
 
     function testCantEnterWithoutPayingMultiple() public {
@@ -111,6 +129,11 @@ contract PuppyRaffleTest is Test {
         puppyRaffle.refund(indexOfPlayer);
     }
 
+    function testAttackRefund() public playersEntered {
+        attackContract.attack{value: entranceFee}();
+
+    }
+
     //////////////////////
     /// getActivePlayerIndex         ///
     /////////////////////
@@ -135,6 +158,19 @@ contract PuppyRaffleTest is Test {
         players[3] = playerFour;
         puppyRaffle.enterRaffle{value: entranceFee * 4}(players);
         _;
+    }
+
+    function testDoesPlayerLengthDecreaseWhenPlayersRefund() public playersEntered {
+        vm.prank(playerTwo);
+        puppyRaffle.refund(1);
+
+        vm.prank(playerThree);
+        puppyRaffle.refund(2);
+
+        // address[] memory puppyRafflePlayers = puppyRaffle.players;
+
+        // assertEq(puppyRafflePlayers.length, 4);
+        // assertEq(tru), true);
     }
 
     function testCantSelectWinnerBeforeRaffleEnds() public playersEntered {
